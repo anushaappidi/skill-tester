@@ -6,6 +6,10 @@ Follow the workflow in `skill-tester/SKILL.md` exactly, step by step.
 Rules:
 - Steps marked [python] must be run via the terminal tool using the exact
   commands shown in SKILL.md. Do not reimplement their logic yourself.
+- After cloning/scanning, run `gate_check.py` before doing anything else.
+  Never generate eval cases or claim to run the skill against a repo
+  that isn't in its ELIGIBLE output — a repo that failed to clone must
+  show up as "skipped" in the final report, never as passing.
 - Steps marked [LLM] are the only ones where you generate content directly.
   Validate that content against the matching schema in
   `skill-tester/scripts/schemas.py` before writing it to disk.

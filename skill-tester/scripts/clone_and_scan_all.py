@@ -48,26 +48,23 @@ def repo_name_from_url(url: str) -> str:
 
 def clone_and_scan_one(entry: dict, dest_dir: Path, force: bool) -> dict:
     url = entry["url"]
-    ref = entry.get("ref", "main")
+    ref = entry.get("ref")  # None if not specified -- never assume "main"
     name = repo_name_from_url(url)
     target = dest_dir / name
     started = time.time()
 
     if target.exists() and not force:
         clone_status = "already_cloned"
+        used_ref = ref
     else:
         if target.exists():
             shutil.rmtree(target)
-        cmd = ["git", "clone", "--depth", "1", "--branch", ref, url, str(target)]
-        try:
-            subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
-            clone_status = "cloned"
-        except subprocess.CalledProcessError as e:
-            return {"name": name, "url": url, "status": "clone_error", "detail": e.stderr.strip(),
+
+        used_ref, err = _clone_with_fallback(url, ref, target)
+        if err is not None:
+            return {"name": name, "url": url, "requested_ref": ref, "status": "clone_error", "detail": err,
                     "elapsed_sec": round(time.time() - started, 1)}
-        except subprocess.TimeoutExpired:
-            return {"name": name, "url": url, "status": "clone_error", "detail": "clone timed out after 300s",
-                    "elapsed_sec": round(time.time() - started, 1)}
+        clone_status = "cloned"
 
     try:
         summary = scan(target)
@@ -77,10 +74,55 @@ def clone_and_scan_one(entry: dict, dest_dir: Path, force: bool) -> dict:
                 "elapsed_sec": round(time.time() - started, 1)}
 
     return {
-        "name": name, "url": url, "ref": ref, "status": clone_status,
+        "name": name, "url": url, "ref": used_ref, "status": clone_status,
         "path": str(target), "tree_entries": len(summary["file_tree"]),
         "elapsed_sec": round(time.time() - started, 1),
     }
+
+
+def _clone_with_fallback(url: str, ref: str | None, target: Path):
+    """
+    Returns (used_ref, error). error is None on success.
+
+    - If ref is None: clone without --branch, letting git use whatever the
+      remote's actual default branch is (main, master, trunk, etc).
+    - If ref is given: try that branch first. If it fails specifically
+      because the branch doesn't exist, fall back to the remote default
+      and record that the requested ref was wrong, rather than treating
+      the whole repo as unreachable.
+    """
+    def run_clone(branch: str | None):
+        cmd = ["git", "clone", "--depth", "1"]
+        if branch:
+            cmd += ["--branch", branch]
+        cmd += [url, str(target)]
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+
+    try:
+        if ref is None:
+            result = run_clone(None)
+            if result.returncode == 0:
+                return "(remote default)", None
+            return None, result.stderr.strip()
+
+        result = run_clone(ref)
+        if result.returncode == 0:
+            return ref, None
+
+        stderr = result.stderr.strip()
+        branch_missing = "not found in upstream" in stderr or "Remote branch" in stderr or "couldn't find remote ref" in stderr
+        if not branch_missing:
+            return None, stderr  # a real error (auth, network, bad URL) -- don't mask it by retrying
+
+        if target.exists():
+            shutil.rmtree(target)
+        retry = run_clone(None)
+        if retry.returncode == 0:
+            return f"(remote default -- requested '{ref}' does not exist)", None
+        return None, f"requested ref '{ref}' not found, AND default-branch retry also failed: {retry.stderr.strip()}"
+
+    except subprocess.TimeoutExpired:
+        return None, "clone timed out after 300s"
 
 
 def main():

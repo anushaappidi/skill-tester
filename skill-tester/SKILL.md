@@ -32,6 +32,7 @@ skill-tester/
 │   ├── clone_repos.py          (deterministic: git clone, single-repo/standalone)
 │   ├── scan_repo.py            (deterministic: structure summary -> JSON, single-repo/standalone)
 │   ├── clone_and_scan_all.py   (deterministic: clone+scan ALL repos in parallel, safely)
+│   ├── gate_check.py           (deterministic: hard-blocks Steps 4-6 for repos that didn't actually clone)
 │   ├── compare_results.py      (deterministic: grade check_type="deterministic" cases)
 │   ├── build_report.py         (deterministic: JSON -> Markdown report)
 │   └── schemas.py              (JSON schemas used to validate every LLM output)
@@ -114,6 +115,20 @@ If you'd rather run clone/scan one repo at a time (e.g. debugging a
 single failure), `scripts/clone_repos.py` and `scripts/scan_repo.py`
 still work standalone exactly as before.
 
+### Step 3.5 — Gate: only repos that actually cloned may proceed **[python, mandatory]**
+
+```bash
+python skill-tester/scripts/gate_check.py --dest workspace/repos
+```
+
+Run this before touching Step 4. It reads the clone/scan summary and marks any repo that didn't actually clone+scan successfully with a `SKIPPED.json` file in that repo's directory.
+
+**Hard rule: for every repo in the SKIPPED list this prints, do not perform Steps 4-6 for it. Do not generate `cases.json`. Do not call the model claiming to "apply the skill" against it.** A repo that failed to clone has no content to test against — generating eval cases anyway produces a report that looks like the skill passed when it was never actually run. `build_report.py` also enforces this at the code level (a `SKIPPED.json` marker overrides any `cases.json` found for that repo), but don't rely on that backstop — treat the ELIGIBLE list from this script's output as the actual scope of Steps 4-6.
+
+If a repo you expected to test shows up SKIPPED, check the reason before moving on — it's usually one of: wrong `ref` in `config/repos.json` (fixed automatically now — omit `ref` entirely unless you need a non-default branch), a private repo needing auth (see note below), or the URL being wrong/repo renamed.
+
+**Private repos:** these scripts use plain `git clone` over HTTPS, so a private repo will fail with an auth error unless your environment's git is already configured with credentials (e.g. a credential helper or an `https://<token>@github.com/...` URL in `config/repos.json`). There's no separate auth mechanism built into these scripts — whatever `git clone <url>` would do in your terminal is what happens here.
+
 ### Step 4 — Generate eval cases **[LLM, 1 call per repo]**
 
 Input: `workspace/skill_spec.json` + `workspace/repos/<name>/scan.json` (never the raw repo — scan.json only).
@@ -173,6 +188,7 @@ See `references/eval_case_types.md` for guidance the subagents can share.
 
 ## Guardrails (read before running)
 
+- **Never generate eval cases or apply the skill against a repo that isn't in `gate_check.py`'s ELIGIBLE list.** This is the most important rule in this file — a skipped/failed clone must produce a "skipped" result in the report, never a "passed" one. If you're ever unsure whether a repo actually cloned, check for `scan.json` in its directory before doing anything else with it.
 - Never let the model report aggregate counts, percentages, or "X out of Y passed" — that must come from `build_report.py` only.
 - Every LLM JSON output must validate against the matching schema in `scripts/schemas.py` before being written to disk. If it fails validation, retry the call once with the validation error appended; if it fails twice, mark the case as `"error"` rather than guessing.
 - Keep semantic-judgment prompts scoped to a single case (rubric + actual output). Never show the model the whole report-in-progress when grading a single case — that invites it to rationalize consistency with earlier cases instead of judging this one on its merits.

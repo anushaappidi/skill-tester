@@ -25,7 +25,7 @@ def repo_name_from_url(url: str) -> str:
     return name
 
 
-def clone_one(url: str, ref: str, dest_dir: Path, force: bool) -> dict:
+def clone_one(url: str, ref: str | None, dest_dir: Path, force: bool) -> dict:
     name = repo_name_from_url(url)
     target = dest_dir / name
 
@@ -35,19 +35,32 @@ def clone_one(url: str, ref: str, dest_dir: Path, force: bool) -> dict:
         else:
             return {"name": name, "url": url, "status": "already_cloned", "path": str(target)}
 
-    cmd = [
-        "git", "clone",
-        "--depth", "1",
-        "--branch", ref,
-        url, str(target),
-    ]
+    def run_clone(branch):
+        cmd = ["git", "clone", "--depth", "1"]
+        if branch:
+            cmd += ["--branch", branch]
+        cmd += [url, str(target)]
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+
     try:
-        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=300)
-        return {"name": name, "url": url, "ref": ref, "status": "cloned", "path": str(target)}
-    except subprocess.CalledProcessError as e:
-        return {"name": name, "url": url, "ref": ref, "status": "error", "detail": e.stderr.strip()}
+        result = run_clone(ref)
+        if result.returncode == 0:
+            return {"name": name, "url": url, "ref": ref or "(remote default)", "status": "cloned", "path": str(target)}
+
+        stderr = result.stderr.strip()
+        if ref and ("not found in upstream" in stderr or "Remote branch" in stderr or "couldn't find remote ref" in stderr):
+            if target.exists():
+                shutil.rmtree(target)
+            retry = run_clone(None)
+            if retry.returncode == 0:
+                return {"name": name, "url": url, "ref": f"(remote default -- requested '{ref}' does not exist)",
+                        "status": "cloned", "path": str(target)}
+            return {"name": name, "url": url, "requested_ref": ref, "status": "error",
+                     "detail": f"ref '{ref}' not found, and default-branch retry also failed: {retry.stderr.strip()}"}
+
+        return {"name": name, "url": url, "requested_ref": ref, "status": "error", "detail": stderr}
     except subprocess.TimeoutExpired:
-        return {"name": name, "url": url, "ref": ref, "status": "error", "detail": "clone timed out after 300s"}
+        return {"name": name, "url": url, "requested_ref": ref, "status": "error", "detail": "clone timed out after 300s"}
 
 
 def main():
@@ -69,7 +82,7 @@ def main():
     results = []
     for entry in repos:
         url = entry["url"]
-        ref = entry.get("ref", "main")
+        ref = entry.get("ref")  # None if not specified -- never assume "main"
         result = clone_one(url, ref, dest_dir, args.force)
         results.append(result)
         status = result["status"]

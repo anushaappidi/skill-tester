@@ -21,9 +21,24 @@ from pathlib import Path
 
 def load_repo(repo_dir: Path) -> dict:
     name = repo_dir.name
+
+    # SKIPPED.json is authoritative and set by gate_check.py based on
+    # actual clone/scan success -- it overrides everything else, even if
+    # a cases.json exists for this repo (which would mean Steps 4-6 ran
+    # against a repo that was never actually available, producing a
+    # misleading report).
+    skipped_marker = repo_dir / "SKIPPED.json"
+    if skipped_marker.exists():
+        info = json.loads(skipped_marker.read_text())
+        result = {"name": name, "status": "skipped", "reason": info.get("reason", "unknown")}
+        if (repo_dir / "cases.json").exists():
+            result["reason"] += (" [NOTE: cases.json was found for this repo despite it being marked "
+                                  "ineligible by gate_check.py -- those results were discarded]")
+        return result
+
     cases_path = repo_dir / "cases.json"
     if not cases_path.exists():
-        return {"name": name, "status": "skipped", "reason": "no cases.json found (scan/clone likely failed)"}
+        return {"name": name, "status": "skipped", "reason": "no cases.json found (repo was never gated eligible)"}
 
     cases = json.loads(cases_path.read_text())
     enriched = []
