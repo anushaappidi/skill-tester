@@ -14,6 +14,7 @@
 | Failed | {{TOTAL_FAIL}} |
 | Errors | {{TOTAL_ERROR}} |
 | Pass rate | {{PASS_RATE}}% |
+| Avg. phase completion | {{AVG_PHASE_COMPLETION}}% |
 
 {{REPO_SECTIONS}}
 ---

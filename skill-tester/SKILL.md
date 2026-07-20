@@ -17,7 +17,7 @@ Given:
 
 LLMs can hallucinate, especially when asked to summarize their own results or do arithmetic. So the rule here is:
 
-- **Only 3 steps use the model** (parsing the skill spec, generating eval cases, applying the skill under test — plus grading *only* for cases that truly can't be checked mechanically).
+- **Only 3 kinds of calls use the model** (parsing the skill spec once, generating eval cases once per repo, running the skill under test once per repo — plus grading *only* for cases that truly can't be checked mechanically).
 - **Everything else is Python**: cloning, repo scanning, deterministic checks, counting, aggregating, and rendering the final report. The model never writes the final pass/fail counts — `scripts/build_report.py` computes them from raw JSON files on disk.
 - **Prefer deterministic eval cases over semantic ones.** When generating eval cases in Step 4, always ask: "can this be checked with a regex / file-exists / exit-code check?" before falling back to LLM judgment.
 
@@ -33,7 +33,8 @@ skill-tester/
 │   ├── scan_repo.py            (deterministic: structure summary -> JSON, single-repo/standalone)
 │   ├── clone_and_scan_all.py   (deterministic: clone+scan ALL repos in parallel, safely)
 │   ├── gate_check.py           (deterministic: hard-blocks Steps 4-6 for repos that didn't actually clone)
-│   ├── compare_results.py      (deterministic: grade check_type="deterministic" cases)
+│   ├── phase_coverage.py       (deterministic: diffs expected phases vs phase_log.json -> phase_coverage.json)
+│   ├── compare_results.py      (deterministic: grade check_type="deterministic" cases against skill_run/)
 │   ├── build_report.py         (deterministic: JSON -> Markdown report)
 │   └── schemas.py              (JSON schemas used to validate every LLM output)
 ├── templates/
@@ -74,11 +75,21 @@ Read the target skill's `SKILL.md` in full. Produce strict JSON matching `script
       "prompt_kind": "confirm_yes_no",
       "default": "yes"
     }
+  ],
+  "phases": [
+    {
+      "phase_id": "phase1",
+      "name": "Validate inputs",
+      "description": "checks the repo has the expected structure before doing anything",
+      "expected_outputs": ["a validation summary"]
+    }
   ]
 }
 ```
 
 `user_inputs` covers every point where the skill would normally pause and ask a human something — confirmations, choices, free-text parameters, paths. Use `[]` if the skill is fully non-interactive. Pick each `default` using `references/default_input_policy.md`'s fallback table unless the skill's own docs suggest a more specific sensible default for that particular prompt.
+
+`phases` covers every distinct stage the target `SKILL.md` describes — most skills are already written as "Step 1 / Step 2 / ..." or "Phase 1 / Phase 2 / ...", so this is usually direct extraction, not inference. If the skill genuinely has no internal phase structure (a single-shot task), use one phase covering the whole thing. This list is what makes it possible to see exactly how far a run got on a given repo, instead of only knowing whether the final output matched — get this right, since it's used as the fixed yardstick for every repo's phase log later.
 
 Write it to `workspace/skill_spec.json` (use the file-write tool; do not hand-format — copy the JSON exactly).
 
@@ -135,19 +146,48 @@ Input: `workspace/skill_spec.json` + `workspace/repos/<name>/scan.json` (never t
 
 Produce 3-5 eval cases as JSON matching `scripts/schemas.py::EVAL_CASE_SCHEMA`. For each case, set `check_type` to `"deterministic"` whenever the expected result can be checked by a script (a file exists, a string matches a regex, a command's exit code is 0, a specific line count). Only use `"semantic"` when the skill's output is genuinely open-ended (e.g. quality of written prose) and provide a `rubric` (1-2 sentences, not a full essay) for the semantic case.
 
+Set each case's `phase_id` to the `skill_spec.phases[].phase_id` it's actually verifying — this is what lets the report show coverage per phase instead of one undifferentiated pile of pass/fail. Try to cover multiple phases across your cases, not just the skill's final output; a case checking something phase 2 produces is what catches "phase 2 silently never ran" even when later phases happen to look fine.
+
+Since all cases for a repo check the output of a single shared skill run (Step 5), a case's `check.target` should be a path relative to that run's output directory unless it's an `exit_code` check (see `check.root` in the schema).
+
 Write to `workspace/repos/<name>/cases.json`.
 
 If a particular case needs a different answer to one of the skill's `user_inputs` than the global default (e.g. to specifically test the "no" branch of a confirmation), set that case's `input_defaults` to override it for that case only — see `scripts/schemas.py::EVAL_CASE_SCHEMA`.
 
-### Step 5 — Apply the skill under test **[LLM, 1 call per case]**
+### Step 5 — Apply the skill under test **[LLM, 1 call per repo, not per case]**
 
-This is the one step that fundamentally requires the model: follow the target skill's `SKILL.md` instructions against the cloned repo to produce the eval case's actual output. Save the raw output to `workspace/repos/<name>/cases/<case_id>/actual.txt` (or the actual file(s) the skill was supposed to produce, if it's a file-generation skill — copy those into that directory too).
+Run the skill **once per repo**, following its phases in order against the cloned repo at `workspace/repos/<name>/`. All of that repo's eval cases (Step 4) check the output of this single run — the skill isn't re-run separately per case. This is both more realistic (phase-based skills are meant to run start-to-finish once) and cheaper (one model-driven run instead of N).
 
-**If the skill under test pauses to ask for input at any point, never wait for a real person.** Resolve it immediately using `references/default_input_policy.md`'s priority order (case's `input_defaults` → skill spec's `user_inputs` default → fallback table), supply that value, and keep going. Record every substitution made during this case as a JSON array of short strings (e.g. `"confirm_overwrite=yes (from skill_spec default)"`) and write it to `workspace/repos/<name>/cases/<case_id>/input_substitutions.json`. Write `[]` if the case ran with no interactive prompts at all — Step 6 picks this file up automatically either way.
+**"Running a phase" means actually doing the phase's work, not checking whether the phase would apply.** If the skill under test has no executable scripts of its own — it's instructions for an agent to carry out by hand — then carrying it out means genuinely reading the relevant code, making the judgment calls the phase describes, and producing whatever artifact the phase is supposed to produce. Determining "this repo matches the profile this phase targets" or "this is the route this phase would take" is discovery, not execution — it is never sufficient to log a phase `"completed"`. A phase without a concrete produced artifact (a file written, a diff made, a decision explicitly recorded with its reasoning) is not completed, no matter how confident the routing analysis was.
 
-Exception: if a prompt is asking about something destructive or irreversible that the skill spec didn't already document as expected behavior, don't auto-confirm it — treat it as a finding instead (see the policy doc's last section) and stop that case there.
+If a phase's `expected_outputs` (from `skill_spec.json`) says it should produce something, that something needs to actually exist under `skill_run/` before you log `"completed"` for it. If you find yourself about to write `"completed"` based on reasoning like "this would route to X" or "the profile indicates Y applies here" without X or Y having actually been done — stop, that's the shortcut this rule exists to catch. Log it honestly instead: `"skipped"` with a detail explaining you validated applicability but didn't execute the phase, so the report reflects reality.
 
-Do not self-grade in this step. Just produce the output.
+Put whatever files the skill produces under `workspace/repos/<name>/skill_run/` (create it if the skill doesn't already write there — copy/move its output in if it wrote elsewhere).
+
+**Log every phase transition to `workspace/repos/<name>/phase_log.json` in real time, as you go — not reconstructed at the end.** Each entry matches `scripts/schemas.py::PHASE_LOG_ENTRY_SCHEMA`:
+
+```json
+{"phase_id": "phase2", "status": "started", "detail": "running test suite"}
+```
+
+Append a `"started"` entry when you begin a phase, then a `"completed"`, `"skipped"`, or `"error"` entry when it resolves, with a one-sentence `detail`. If you stop partway through — the skill errors out, a phase's prerequisites aren't met, you run out of context — the log up to that point is the truth of what happened; do not go back and add entries for phases you didn't actually reach, and do not describe a phase as `"completed"` if it wasn't. This log is the entire point of this step's structure: it's what makes a partial run visible in the report instead of just looking like a mysteriously-failing final check.
+
+**If the skill under test pauses to ask for input at any point, never wait for a real person.** Resolve it immediately using `references/default_input_policy.md`'s priority order (case's `input_defaults` → skill spec's `user_inputs` default → fallback table), supply that value, and keep going. Record every substitution as a JSON array of short strings (e.g. `"confirm_overwrite=yes (from skill_spec default)"`) and write it to `workspace/repos/<name>/input_substitutions.json`. Write `[]` if the run had no interactive prompts at all.
+
+Exception: if a prompt is asking about something destructive or irreversible that the skill spec didn't already document as expected behavior, don't auto-confirm it — log it as an `"error"` phase entry with the reason instead, and stop there.
+
+Do not self-grade in this step. Just run the skill and log what happened.
+
+### Step 5.5 — Compute phase coverage **[python, mandatory]**
+
+```bash
+python skill-tester/scripts/phase_coverage.py \
+  --skill-spec workspace/skill_spec.json \
+  --phase-log workspace/repos/<name>/phase_log.json \
+  --out workspace/repos/<name>/phase_coverage.json
+```
+
+Run once per repo, right after Step 5. Purely deterministic — it diffs the expected phase list from `skill_spec.json` against what actually got logged, and marks any expected phase with no log entry as `"not_reached"`. This is what surfaces a 7-phase skill that quietly stopped after phase 2 as "2/7 completed, phases 3-7 not reached" in the final report, rather than the report only reflecting whatever the last-reached phase happened to produce.
 
 ### Step 6 — Grade
 
@@ -155,11 +195,13 @@ Do not self-grade in this step. Just produce the output.
   ```bash
   python skill-tester/scripts/compare_results.py \
     --case workspace/repos/<name>/cases.json \
-    --actual-dir workspace/repos/<name>/cases
+    --skill-run-dir workspace/repos/<name>/skill_run \
+    --case-dir workspace/repos/<name>/cases \
+    --input-substitutions workspace/repos/<name>/input_substitutions.json
   ```
-  Writes `result.json` per case with `{"pass": true/false, "detail": "..."}`. No model call, no hallucination risk. It automatically reads `input_substitutions.json` from Step 5, if present, and folds it into `result.json`.
+  Writes `result.json` per case with `{"pass": true/false, "detail": "..."}`, checked against the skill's actual output in `skill_run/`. No model call, no hallucination risk. It automatically folds in the repo's shared `input_substitutions.json` from Step 5, if present.
 
-- **Semantic cases [LLM, 1 call per semantic case only]:** Give the model the case's rubric + actual output, ask for strict JSON: `{"pass": true|false, "rationale": "<=2 sentences"}`. Nothing else — no free-form commentary, no summarizing other cases. Validate against `schemas.py::JUDGMENT_SCHEMA`, then merge in that case's `input_substitutions.json` (if any) before writing the combined object to `result.json`, matching `schemas.py::RESULT_SCHEMA`.
+- **Semantic cases [LLM, 1 call per semantic case only]:** Give the model the case's rubric + the relevant part of `skill_run/`'s output, ask for strict JSON: `{"pass": true|false, "rationale": "<=2 sentences"}`. Nothing else — no free-form commentary, no summarizing other cases. Validate against `schemas.py::JUDGMENT_SCHEMA`, then merge in the repo's `input_substitutions.json` (if any) before writing the combined object to `result.json`, matching `schemas.py::RESULT_SCHEMA`.
 
 ### Step 7 — Build the report **[python]**
 
@@ -188,7 +230,8 @@ See `references/eval_case_types.md` for guidance the subagents can share.
 
 ## Guardrails (read before running)
 
-- **Never generate eval cases or apply the skill against a repo that isn't in `gate_check.py`'s ELIGIBLE list.** This is the most important rule in this file — a skipped/failed clone must produce a "skipped" result in the report, never a "passed" one. If you're ever unsure whether a repo actually cloned, check for `scan.json` in its directory before doing anything else with it.
+- **Never generate eval cases or apply the skill against a repo that isn't in `gate_check.py`'s ELIGIBLE list.** This is one of the two most important rules in this file — a skipped/failed clone must produce a "skipped" result in the report, never a "passed" one. If you're ever unsure whether a repo actually cloned, check for `scan.json` in its directory before doing anything else with it.
+- **Never substitute checking whether a phase would apply for actually performing it.** This is the other most important rule — a phase is only `"completed"` if its real work happened and produced a concrete artifact. Confirming "this repo matches the routing profile for phase 3" is not phase 3. If a full end-to-end run across every repo turns out to be too much work for one pass, say so and propose running fewer repos at full depth rather than all repos at shallow depth — a smaller number of honestly-executed repos is worth more than a report that looks complete but isn't.
 - Never let the model report aggregate counts, percentages, or "X out of Y passed" — that must come from `build_report.py` only.
 - Every LLM JSON output must validate against the matching schema in `scripts/schemas.py` before being written to disk. If it fails validation, retry the call once with the validation error appended; if it fails twice, mark the case as `"error"` rather than guessing.
 - Keep semantic-judgment prompts scoped to a single case (rubric + actual output). Never show the model the whole report-in-progress when grading a single case — that invites it to rationalize consistency with earlier cases instead of judging this one on its merits.

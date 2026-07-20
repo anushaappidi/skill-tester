@@ -60,6 +60,9 @@ def load_repo(repo_dir: Path) -> dict:
 
         enriched.append({**case, "result": result})
 
+    phase_coverage_path = repo_dir / "phase_coverage.json"
+    phase_coverage = json.loads(phase_coverage_path.read_text()) if phase_coverage_path.exists() else None
+
     return {
         "name": name,
         "status": "tested",
@@ -67,12 +70,33 @@ def load_repo(repo_dir: Path) -> dict:
         "pass_count": pass_count,
         "fail_count": fail_count,
         "error_count": error_count,
+        "phase_coverage": phase_coverage,
     }
+
+
+def render_phase_table(phase_coverage: dict) -> str:
+    if not phase_coverage:
+        return "*(no phase_coverage.json found for this repo -- Step 5.5 wasn't run, or the skill under test has no declared phases)*\n"
+
+    status_marks = {
+        "completed": "✅ completed", "started": "🟡 started (not completed)",
+        "skipped": "⏭️ skipped", "error": "❌ error", "not_reached": "⬜ not reached",
+    }
+    rows = []
+    for p in phase_coverage["phases"]:
+        mark = status_marks.get(p["status"], p["status"])
+        rows.append(f"| {p['phase_id']} | {p['name']} | {mark} | {p['detail']} |")
+
+    header = f"**Phase coverage: {phase_coverage['completed_phases']}/{phase_coverage['total_phases']} completed**\n\n"
+    table = "| Phase | Name | Status | Detail |\n|---|---|---|---|\n" + "\n".join(rows)
+    return header + table + "\n"
 
 
 def render_repo_section(repo: dict) -> str:
     if repo["status"] == "skipped":
         return f"## {repo['name']}\n\n**Skipped** — {repo['reason']}\n"
+
+    phase_section = render_phase_table(repo.get("phase_coverage"))
 
     rows = []
     for case in repo["cases"]:
@@ -82,15 +106,16 @@ def render_repo_section(repo: dict) -> str:
             mark = "⚠️ ERROR"
         subs = result.get("input_substitutions") or []
         subs_note = f"{len(subs)} ({'; '.join(subs)})" if subs else "-"
-        rows.append(f"| {case['case_id']} | {case['check_type']} | {mark} | {result.get('detail', '')} | {subs_note} |")
+        phase_tag = case.get("phase_id", "-")
+        rows.append(f"| {case['case_id']} | {phase_tag} | {case['check_type']} | {mark} | {result.get('detail', '')} | {subs_note} |")
 
-    table = "| Case | Type | Result | Detail | Defaults used |\n|---|---|---|---|---|\n" + "\n".join(rows)
+    table = "| Case | Phase | Type | Result | Detail | Defaults used |\n|---|---|---|---|---|---|\n" + "\n".join(rows)
     counts = f"- Cases: {len(repo['cases'])} ({repo['pass_count']} passed, {repo['fail_count']} failed"
     if repo["error_count"]:
         counts += f", {repo['error_count']} errored"
     counts += ")"
 
-    return f"## {repo['name']}\n\n{counts}\n\n{table}\n"
+    return f"## {repo['name']}\n\n{phase_section}\n{counts}\n\n{table}\n"
 
 
 def render_report(template_text: str, values: dict) -> str:
@@ -125,6 +150,13 @@ def main():
     skipped_repos = sum(1 for r in repo_results if r["status"] == "skipped")
     pass_rate = round(100 * total_pass / total_cases, 1) if total_cases else 0.0
 
+    phase_pcts = []
+    for r in repo_results:
+        pc = r.get("phase_coverage")
+        if pc and pc["total_phases"]:
+            phase_pcts.append(100 * pc["completed_phases"] / pc["total_phases"])
+    avg_phase_completion = round(sum(phase_pcts) / len(phase_pcts), 1) if phase_pcts else "n/a"
+
     repo_sections = "\n".join(render_repo_section(r) for r in repo_results)
 
     template_text = Path(args.template).read_text()
@@ -138,6 +170,7 @@ def main():
         "TOTAL_FAIL": total_fail,
         "TOTAL_ERROR": total_error,
         "PASS_RATE": pass_rate,
+        "AVG_PHASE_COMPLETION": avg_phase_completion,
         "REPO_SECTIONS": repo_sections,
     })
 

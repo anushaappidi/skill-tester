@@ -12,7 +12,7 @@ Usage from another script:
 
 SKILL_SPEC_SCHEMA = {
     "type": "object",
-    "required": ["purpose", "triggers", "inputs", "outputs", "success_criteria", "user_inputs"],
+    "required": ["purpose", "triggers", "inputs", "outputs", "success_criteria", "user_inputs", "phases"],
     "properties": {
         "purpose": {"type": "string", "minLength": 1},
         "triggers": {"type": "array", "items": {"type": "string"}, "minItems": 1},
@@ -36,6 +36,25 @@ SKILL_SPEC_SCHEMA = {
                     },
                     "choices": {"type": "array", "items": {"type": "string"}},
                     "default": {"type": ["string", "number", "boolean"]},
+                },
+                "additionalProperties": False,
+            },
+        },
+        # Every distinct stage/phase the skill under test's own SKILL.md
+        # describes (e.g. "Step 1", "Phase 2: Validation"). Extracted once
+        # here so every repo run can be checked against the SAME expected
+        # phase list, regardless of how far the agent actually got.
+        "phases": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "required": ["phase_id", "name", "description"],
+                "properties": {
+                    "phase_id": {"type": "string", "pattern": "^[a-z0-9_-]+$"},
+                    "name": {"type": "string", "minLength": 1},
+                    "description": {"type": "string", "minLength": 1},
+                    "expected_outputs": {"type": "array", "items": {"type": "string"}},
                 },
                 "additionalProperties": False,
             },
@@ -64,11 +83,22 @@ EVAL_CASE_SCHEMA = {
                 "pattern": {"type": "string"},
                 "expected_exit_code": {"type": "integer"},
                 "min_lines": {"type": "integer"},
+                # "skill_run" = resolve target against the skill's shared
+                # output directory (the normal case -- checking what the
+                # skill actually produced). "case" = resolve against this
+                # case's own directory (for a verification artifact the
+                # grading step itself creates, e.g. a test-run exit code).
+                # Defaults to "skill_run" if omitted.
+                "root": {"type": "string", "enum": ["skill_run", "case"]},
             },
             "required": ["type"],
         },
         # Required when check_type == "semantic"
         "rubric": {"type": "string", "maxLength": 400},
+        # Which phase (skill_spec.phases[].phase_id) this case is verifying.
+        # Optional but strongly preferred -- lets the report show coverage
+        # per phase, not just an undifferentiated pass/fail pile.
+        "phase_id": {"type": "string", "pattern": "^[a-z0-9_-]+$"},
         # Optional: overrides skill_spec.user_inputs defaults for this
         # specific case (e.g. this case wants prompt_kind "path" answered
         # with "./src" instead of the global default ".").
@@ -104,6 +134,22 @@ RESULT_SCHEMA = {
             "type": "array",
             "items": {"type": "string"},
         },
+    },
+    "additionalProperties": False,
+}
+
+# One entry per phase transition, appended to phase_log.json IN REAL TIME
+# as the agent works through the skill under test's phases in Step 5 --
+# not reconstructed retroactively at the end. This is what makes it
+# possible to see exactly where a run actually stopped, instead of only
+# knowing the skill "didn't fully work."
+PHASE_LOG_ENTRY_SCHEMA = {
+    "type": "object",
+    "required": ["phase_id", "status", "detail"],
+    "properties": {
+        "phase_id": {"type": "string", "pattern": "^[a-z0-9_-]+$"},
+        "status": {"type": "string", "enum": ["started", "completed", "skipped", "error"]},
+        "detail": {"type": "string", "maxLength": 400},
     },
     "additionalProperties": False,
 }

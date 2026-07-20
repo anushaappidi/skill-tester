@@ -29,6 +29,15 @@ Rules:
   substitution — unless the prompt concerns something destructive or
   irreversible the skill's spec didn't already expect, in which case
   treat it as a failed case instead of auto-confirming.
+- Apply the skill under test ONCE per repo (not once per eval case),
+  and log every phase transition to that repo's phase_log.json in real
+  time as you go, per SKILL.md Step 5.
+- Never log a phase "completed" based only on determining it would
+  apply or which route it would take. A phase is only complete if you
+  actually did its work and produced a concrete artifact. If doing
+  every phase honestly across every repo is too much for one pass, say
+  so and propose fewer repos at full depth rather than silently
+  shortcutting to routing checks across all of them.
 - Ask me to confirm `skill-tester/config/repos.json` and the path to the
   skill under test before starting if either is missing or ambiguous.
 - Before running any destructive command (e.g. --force re-clone), ask
