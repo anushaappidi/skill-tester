@@ -1,0 +1,10 @@
+[
+  {
+    "url": "https://github.com/owner/repo1",
+    "ref": "main"
+  },
+  {
+    "url": "https://github.com/owner/repo2",
+    "ref": "main"
+  }
+]
