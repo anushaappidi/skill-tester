@@ -85,7 +85,10 @@ def render_phase_table(phase_coverage: dict) -> str:
     rows = []
     for p in phase_coverage["phases"]:
         mark = status_marks.get(p["status"], p["status"])
-        rows.append(f"| {p['phase_id']} | {p['name']} | {mark} | {p['detail']} |")
+        detail = p["detail"]
+        if p.get("unverified_skip"):
+            detail = f"⚠️ UNVERIFIED ASSUMPTION, not a tested blocker: {detail}"
+        rows.append(f"| {p['phase_id']} | {p['name']} | {mark} | {detail} |")
 
     header = f"**Phase coverage: {phase_coverage['completed_phases']}/{phase_coverage['total_phases']} completed**\n\n"
     table = "| Phase | Name | Status | Detail |\n|---|---|---|---|\n" + "\n".join(rows)

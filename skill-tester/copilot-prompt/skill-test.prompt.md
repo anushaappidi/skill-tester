@@ -34,10 +34,16 @@ Rules:
   time as you go, per SKILL.md Step 5.
 - Never log a phase "completed" based only on determining it would
   apply or which route it would take. A phase is only complete if you
-  actually did its work and produced a concrete artifact. If doing
-  every phase honestly across every repo is too much for one pass, say
-  so and propose fewer repos at full depth rather than silently
-  shortcutting to routing checks across all of them.
+  actually did its work and produced a concrete artifact.
+- "Not confirmed available" is never a valid reason to skip a phase.
+  If a phase needs a build/test tool, check for it for real (e.g.
+  `mvn --version`) and install it if missing before concluding you
+  can't proceed. Only skip with a genuine, tested blocker and the exact
+  command + error you hit — never an assumption you didn't verify.
+- Do every phase for real, for every eligible repo, even if it takes
+  many turns. Running out of practical capacity in one pass is never a
+  reason to substitute shallow checks for the remaining work — continue
+  it, don't shortcut it.
 - Ask me to confirm `skill-tester/config/repos.json` and the path to the
   skill under test before starting if either is missing or ambiguous.
 - Before running any destructive command (e.g. --force re-clone), ask

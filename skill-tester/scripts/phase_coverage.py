@@ -24,6 +24,23 @@ from pathlib import Path
 # started -> completed, and we want its final state
 STATUS_RANK = {"error": 0, "skipped": 1, "started": 2, "completed": 3}
 
+# Phrases that indicate the agent assumed something was unavailable
+# instead of actually testing it -- e.g. "not confirmed available in
+# test environment" without ever running `mvn --version`. This doesn't
+# block anything (the log entry is still recorded honestly), it just
+# makes an unverified skip visible in the report instead of blending in
+# with a genuinely-tested blocker.
+UNVERIFIED_SKIP_PHRASES = [
+    "not confirmed", "might not be available", "may not be available",
+    "assumed", "assuming", "not sure whether", "unclear whether",
+    "possibly not available", "presumably", "likely not available",
+]
+
+
+def flag_unverified(detail: str) -> bool:
+    lowered = detail.lower()
+    return any(phrase in lowered for phrase in UNVERIFIED_SKIP_PHRASES)
+
 
 def compute_coverage(expected_phases: list, log_entries: list) -> list:
     last_entry_by_phase = {}
@@ -38,11 +55,15 @@ def compute_coverage(expected_phases: list, log_entries: list) -> list:
             coverage.append({
                 "phase_id": pid, "name": phase["name"],
                 "status": "not_reached", "detail": "no log entry -- the skill run never got here",
+                "unverified_skip": False,
             })
         else:
+            status = entry["status"]
+            unverified = status in ("skipped", "error") and flag_unverified(entry["detail"])
             coverage.append({
                 "phase_id": pid, "name": phase["name"],
-                "status": entry["status"], "detail": entry["detail"],
+                "status": status, "detail": entry["detail"],
+                "unverified_skip": unverified,
             })
     return coverage
 
@@ -76,6 +97,8 @@ def main():
     print(f"Phase coverage: {completed}/{total} completed")
     for c in coverage:
         print(f"  [{c['status']:>11}] {c['phase_id']}: {c['name']}")
+        if c["unverified_skip"]:
+            print(f"      ⚠ WARNING: this looks like an unverified assumption, not a tested blocker: \"{c['detail']}\"")
 
 
 if __name__ == "__main__":
