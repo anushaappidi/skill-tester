@@ -1,52 +1,9 @@
 ---
 mode: agent
 ---
-Follow the workflow in `skill-tester/SKILL.md` exactly, step by step.
+Follow `skill-tester/SKILL.md` exactly — its Rules section and every
+numbered step, in order. Don't skip Step 7; don't reimplement Step 5.
 
-Rules:
-- Steps marked [python] must be run via the terminal tool using the exact
-  commands shown in SKILL.md. Do not reimplement their logic yourself.
-- After cloning/scanning, run `gate_check.py` before doing anything else.
-  Never generate eval cases or claim to run the skill against a repo
-  that isn't in its ELIGIBLE output — a repo that failed to clone must
-  show up as "skipped" in the final report, never as passing.
-- Steps marked [LLM] are the only ones where you generate content directly.
-  Validate that content against the matching schema in
-  `skill-tester/scripts/schemas.py` before writing it to disk.
-- Never compute or state aggregate pass/fail counts yourself — those come
-  only from `scripts/build_report.py`'s output.
-- Always use `clone_and_scan_all.py` (not the single-repo scripts) so
-  cloning and scanning run in parallel across all repos.
-- If subagents are available, parallelize the LLM steps (eval-case
-  generation, applying the skill, grading) one track per repo, capped at
-  4-6 concurrent tracks. Each track may only read/write inside its own
-  repo's directory — never touch another repo's files or the shared
-  evals/ output mid-flight. Run the report-building step exactly once,
-  only after every track has finished.
-- If the skill under test asks for input at any point while you're
-  applying it (Step 5), never wait for me. Resolve it per
-  `skill-tester/references/default_input_policy.md` and log the
-  substitution — unless the prompt concerns something destructive or
-  irreversible the skill's spec didn't already expect, in which case
-  treat it as a failed case instead of auto-confirming.
-- Apply the skill under test ONCE per repo (not once per eval case),
-  and log every phase transition to that repo's phase_log.json in real
-  time as you go, per SKILL.md Step 5.
-- Never log a phase "completed" based only on determining it would
-  apply or which route it would take. A phase is only complete if you
-  actually did its work and produced a concrete artifact.
-- "Not confirmed available" is never a valid reason to skip a phase.
-  If a phase needs a build/test tool, check for it for real (e.g.
-  `mvn --version`) and install it if missing before concluding you
-  can't proceed. Only skip with a genuine, tested blocker and the exact
-  command + error you hit — never an assumption you didn't verify.
-- Do every phase for real, for every eligible repo, even if it takes
-  many turns. Running out of practical capacity in one pass is never a
-  reason to substitute shallow checks for the remaining work — continue
-  it, don't shortcut it.
-- Ask me to confirm `skill-tester/config/repos.json` and the path to the
-  skill under test before starting if either is missing or ambiguous.
-- Before running any destructive command (e.g. --force re-clone), ask
-  for confirmation first.
-
-When finished, open `evals/report.md` and give me a one-paragraph summary.
+Confirm `skill-tester/config/repos.json` and the skill-under-test path
+first if either is unclear. Then run the full workflow end to end and
+open `evals/report.md` when done.
